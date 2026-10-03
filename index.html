@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Thiện xạ tên lửa</title>
+<style>
+:root{--bg:#0b1020;--panel:#151c33;--fg:#e8ecf8;--mut:#8f9bb8;--acc:#5aa9ff;--warn:#ffb454}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Arial,sans-serif}
+main{max-width:860px;margin:0 auto;padding:12px}
+h1{font-size:1.3rem;margin:4px 0 10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+button{background:var(--panel);color:var(--fg);border:1px solid #2a3558;border-radius:8px;padding:8px 14px;font-size:1rem;cursor:pointer}
+button.on{background:var(--acc);color:#04101f;border-color:var(--acc)}
+canvas{width:100%;height:auto;border-radius:10px;display:block;touch-action:none;cursor:crosshair}
+.panel{background:var(--panel);border-radius:10px;padding:12px;margin-top:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px}
+label{display:block;margin:6px 0 2px;font-size:.92rem}
+input[type=range]{width:100%}
+.hud{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;margin:8px 0;font-size:.95rem}
+.msg{color:var(--warn);min-height:1.5em;font-weight:600}
+.mut{color:var(--mut);font-size:.9rem;margin-top:6px}
+b{color:var(--acc)}
+@media(max-width:560px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>🎯 Thiện xạ tên lửa</h1>
+<div class="row">
+  <button id="m-basic" class="on">Cơ bản</button>
+  <button id="m-hard">Khó</button>
+  <button id="m-sigma">Sigma 😈</button>
+  <button id="again">↺ Chơi lại</button>
+</div>
+<canvas id="c" width="800" height="500"></canvas>
+<div class="hud"><span id="h1"></span><span id="h2"></span></div>
+<div class="msg" id="msg"></div>
+
+<div class="panel">
+  <div class="grid">
+    <div><label>Tốc độ: <b id="spv"></b> m/s</label><input type="range" id="sp" min="5" max="60" step="0.5" value="35"></div>
+    <div><label>Góc bắn: <b id="anv"></b>°</label><input type="range" id="an" min="0" max="90" step="1" value="45"></div>
+    <div><label>Khối lượng vỏ: <b id="msv"></b> kg</label><input type="range" id="ms" min="1" max="20" step="0.5" value="5"></div>
+    <div><label>Đương lượng nổ: <b id="ylv"></b> kg TNT</label><input type="range" id="yl" min="1" max="10" step="0.5" value="3"></div>
+  </div>
+  <p><button id="fire">🚀 Bắn!</button></p>
+  <div class="mut">🖱️ Nhấn giữ chuột (hoặc ngón tay) trên màn hình rồi kéo như Gunny: hướng kéo là góc bắn, kéo càng xa lực càng mạnh, thả ra để bắn. Chấm gợi ý chỉ hiện 1/5 quỹ đạo đầu.</div>
+  <div class="mut">Đương lượng nổ càng lớn thì bán kính nổ càng rộng, nhưng tên lửa nặng hơn nên bay khác đi. Có lực cản không khí: tên lửa nặng ít bị cản hơn.</div>
+</div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const cv=$('c'),ctx=cv.getContext('2d'),W=800,H=500,GY=450,S=2,LX=30,G=9.8,K=0.004;
+const f1=n=>n.toFixed(1).replace('.',',');
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const MODES={
+  basic:{r:12,vx:0,vy:0,x:[100,170],y:null},
+  hard:{r:8,vx:10,vy:0,x:[130,340],y:null},
+  sigma:{r:6,vx:22,vy:14,x:[130,360],y:[25,130]}
+};
+let mode='basic',t,shots,score,state,proj,boom,trail,aiming,drag=null,over,tick=0;
+
+function reset(){
+  const m=MODES[mode],sg=()=>Math.random()<.5?-1:1;
+  t={r:m.r,x:rnd(m.x[0],m.x[1]),y:m.y?rnd(m.y[0],m.y[1]):m.r,vx:m.vx*sg(),vy:m.vy*sg()};
+  shots=3;score=0;state='idle';proj=null;boom=null;trail=[];aiming=false;over=false;
+  $('msg').textContent='Lượt mới: bạn có 3 lần bắn. Trúng mục tiêu = 1000 điểm tuyệt đối!';
+}
+function setMode(m){
+  mode=m;
+  for(const k in MODES)$('m-'+k).className=k===m?'on':'';
+  reset();
+}
+function par(){return{sp:+$('sp').value,an:+$('an').value,ms:+$('ms').value,yl:+$('yl').value}}
+function blastR(yl){return 5*Math.cbrt(yl)}
+function labels(){
+  const p=par();
+  $('spv').textContent=f1(p.sp);$('anv').textContent=p.an;
+  $('msv').textContent=f1(p.ms);$('ylv').textContent=f1(p.yl);
+}
+function mkProj(){
+  const p=par(),a=p.an*Math.PI/180;
+  return{x:LX+8*Math.cos(a),y:2+8*Math.sin(a),vx:p.sp*Math.cos(a),vy:p.sp*Math.sin(a),m:p.ms+p.yl*.5};
+}
+function stepP(p,dt){
+  const v=Math.hypot(p.vx,p.vy),c=K*v/p.m;
+  p.vx-=c*p.vx*dt;p.vy+=(-G-c*p.vy)*dt;
+  p.x+=p.vx*dt;p.y+=p.vy*dt;
+}
+function hint(){
+  const p=mkProj(),pts=[];let n=0;
+  while(p.y>0&&n<20000){stepP(p,1/120);n++;if(n%6===0)pts.push([p.x,p.y])}
+  return pts.slice(0,Math.floor(n/5/6));
+}
+function updTarget(dt){
+  const m=MODES[mode];
+  t.x+=t.vx*dt;
+  if(t.x<m.x[0]){t.x=m.x[0];t.vx=Math.abs(t.vx)}
+  if(t.x>m.x[1]){t.x=m.x[1];t.vx=-Math.abs(t.vx)}
+  if(m.y){
+    t.y+=t.vy*dt;
+    if(t.y<m.y[0]){t.y=m.y[0];t.vy=Math.abs(t.vy)}
+    if(t.y>m.y[1]){t.y=m.y[1];t.vy=-Math.abs(t.vy)}
+  }
+}
+function fire(){
+  if(state!=='idle'||shots<=0)return;
+  proj=mkProj();trail=[];shots--;state='fly';aiming=false;
+  $('msg').textContent='Tên lửa đang bay…';
+}
+function explode(x,y){
+  const R=blastR(par().yl),d=Math.hypot(x-t.x,y-t.y);
+  boom={x,y,R,t:0};state='boom';proj=null;
+  if(d<=t.r+R){
+    score=1000;over=true;
+    $('msg').textContent='🎯 TRÚNG MỤC TIÊU! Điểm tuyệt đối: 1000. Trò chơi kết thúc.';
+  }else{
+    const pts=Math.round(300*Math.exp(-d/50));score+=pts;
+    $('msg').textContent='Cách mục tiêu '+f1(d)+' m → +'+pts+' điểm';
+  }
+}
+function update(){
+  for(let i=0;i<4;i++){
+    updTarget(1/120);
+    if(state==='fly'){
+      stepP(proj,1/120);
+      if(Math.hypot(proj.x-t.x,proj.y-t.y)<=t.r){explode(proj.x,proj.y);break}
+      if(proj.y<=0){explode(proj.x,0);break}
+      if(proj.x>420){explode(proj.x,0);break}
+    }
+  }
+  if(state==='fly'&&++tick%3===0){trail.push([proj.x,proj.y]);if(trail.length>400)trail.shift()}
+  if(state==='boom'){
+    boom.t+=1/60;
+    if(boom.t>.8){
+      if(over||shots<=0){
+        state='over';over=true;
+        if(score<1000)$('msg').textContent='Hết lượt! Tổng điểm: '+score+'. Bấm "Chơi lại" để thử lần nữa.';
+      }else state='idle';
+    }
+  }
+  $('h1').textContent='Mục tiêu: cách bệ phóng '+f1(t.x-LX)+' m'+(MODES[mode].y?', cao '+f1(t.y)+' m':'');
+  $('h2').textContent='Còn '+shots+' lần bắn · Điểm: '+score;
+}
+
+const sx=x=>x*S,sy=y=>GY-y*S;
+function draw(){
+  const g=ctx.createLinearGradient(0,0,0,GY);g.addColorStop(0,'#0a1230');g.addColorStop(1,'#26407a');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,GY);
+  ctx.fillStyle='#2b3a2a';ctx.fillRect(0,GY,W,H-GY);
+  ctx.fillStyle='#8f9bb8';ctx.font='11px system-ui';ctx.textAlign='center';ctx.strokeStyle='rgba(143,155,184,.5)';ctx.lineWidth=1;
+  for(let d=50;d<=350;d+=50){
+    const x=sx(LX+d);ctx.beginPath();ctx.moveTo(x,GY);ctx.lineTo(x,GY+6);ctx.stroke();
+    ctx.fillText(d+' m',x,GY+20);
+  }
+  // mục tiêu
+  const tx=sx(t.x),ty=sy(t.y),tr=t.r*S;
+  [[1,'#e53935'],[.66,'#fff'],[.33,'#e53935']].forEach(([k,c])=>{ctx.fillStyle=c;ctx.beginPath();ctx.arc(tx,ty,tr*k,0,7);ctx.fill()});
+  // bệ phóng
+  const p=par(),lx=sx(LX),ly=sy(2);
+  ctx.fillStyle='#546e7a';ctx.fillRect(lx-18,GY-14,36,14);
+  ctx.save();ctx.translate(lx,ly);ctx.rotate(-p.an*Math.PI/180);
+  ctx.fillStyle='#b0bec5';ctx.fillRect(0,-3,18,6);ctx.restore();
+  // gợi ý + dây kéo
+  if(state==='idle'&&aiming){
+    ctx.fillStyle='rgba(255,255,255,.85)';
+    hint().forEach(q=>{ctx.beginPath();ctx.arc(sx(q[0]),sy(q[1]),2.5,0,7);ctx.fill()});
+  }
+  if(drag){
+    ctx.strokeStyle='#ffb454';ctx.lineWidth=2;ctx.setLineDash([6,5]);
+    ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(drag.x,drag.y);ctx.stroke();ctx.setLineDash([]);
+  }
+  // vệt bay + tên lửa
+  ctx.fillStyle='rgba(255,255,255,.35)';
+  trail.forEach(q=>ctx.fillRect(sx(q[0])-1,sy(q[1])-1,2,2));
+  if(proj){
+    ctx.save();ctx.translate(sx(proj.x),sy(proj.y));ctx.rotate(-Math.atan2(proj.vy,proj.vx));
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(8,0);ctx.lineTo(-6,-4);ctx.lineTo(-6,4);ctx.fill();
+    ctx.fillStyle='#ffb454';ctx.fillRect(-10,-2,4,4);ctx.restore();
+  }
+  // vụ nổ
+  if(boom){
+    const k=Math.min(1,boom.t/.35),a=Math.max(0,1-boom.t/.8);
+    ctx.fillStyle='rgba(255,170,60,'+(.7*a)+')';
+    ctx.beginPath();ctx.arc(sx(boom.x),sy(boom.y),boom.R*S*k,0,7);ctx.fill();
+  }
+}
+
+/* điều khiển bằng chuột / cảm ứng */
+function pt(e){const r=cv.getBoundingClientRect();return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
+cv.addEventListener('pointerdown',e=>{
+  if(state!=='idle'||shots<=0)return;
+  cv.setPointerCapture(e.pointerId);drag=pt(e);aiming=true;setFromDrag();
+});
+cv.addEventListener('pointermove',e=>{if(drag){drag=pt(e);setFromDrag()}});
+cv.addEventListener('pointerup',()=>{
+  if(!drag)return;
+  const big=Math.hypot(drag.x-sx(LX),drag.y-sy(2))>25;
+  drag=null;if(big)fire();
+});
+function setFromDrag(){
+  const dx=drag.x-sx(LX),dy=sy(2)-drag.y,dist=Math.hypot(dx,dy);
+  let ang=Math.atan2(dy,dx)*180/Math.PI;
+  ang=ang>90?90:ang<0?0:ang;
+  $('an').value=Math.round(ang);
+  $('sp').value=Math.max(5,Math.min(60,dist*.12));
+  labels();
+}
+['sp','an','ms','yl'].forEach(id=>$(id).oninput=()=>{aiming=true;labels()});
+$('fire').onclick=fire;
+$('again').onclick=reset;
+$('m-basic').onclick=()=>setMode('basic');
+$('m-hard').onclick=()=>setMode('hard');
+$('m-sigma').onclick=()=>setMode('sigma');
+
+labels();reset();
+(function loop(){update();draw();requestAnimationFrame(loop)})();
+</script>
+</body>
+</html>
